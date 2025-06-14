@@ -1,7 +1,6 @@
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
-#include "hardware/timer.h"
 #include "hardware/pwm.h"
 #include "lib/ssd1306.h"
 #include "lib/font.h"
@@ -22,9 +21,17 @@
 #define BUTTON_A 5
 #define OUT_PIN 7 // GPIO matriz de leds
 
+#define BIT0 4
+#define BIT1 20
+#define BIT2 19
+#define BIT3 18
+
 
 volatile bool modo = 1; //flag boleano para indicar modo (1 = padrão, 0 = modo noite)
 volatile uint8_t estado = 0; //inteiro para indicar estado do semáforo (0 = vermelho, 1 = verde, 2 = amarelo)
+
+void gpio_irq_handler(uint gpio, uint32_t events);
+void valor_bin(uint8_t numero);
 
 //tarefa para controle dos LEDs do semáforo
 void vSemaforoLedTask()
@@ -53,7 +60,7 @@ void vSemaforoLedTask()
         //looping para modo padrão de funcionamento do semáforo
         while(modo){
             //mantém sinal vermelho durante 15s
-            if (estado == 0 && (to_ms_since_boot(get_absolute_time())-last_time) > 15000)
+            if (estado == 0 && (to_ms_since_boot(get_absolute_time())-last_time) > 9000)
             {
                 last_time = to_ms_since_boot(get_absolute_time()); //atualiza tempo
 
@@ -66,7 +73,7 @@ void vSemaforoLedTask()
             }
 
             //mantém sinal verde durante 10s
-            else if (estado == 1 && (to_ms_since_boot(get_absolute_time())-last_time) > 10000)
+            else if (estado == 1 && (to_ms_since_boot(get_absolute_time())-last_time) > 6000)
             {
                 last_time = to_ms_since_boot(get_absolute_time()); //atualiza tempo
 
@@ -79,7 +86,7 @@ void vSemaforoLedTask()
             }
 
             //mantém sinal amarelo durante 5s
-            else if (estado == 2 && (to_ms_since_boot(get_absolute_time())-last_time) > 5000)
+            else if (estado == 2 && (to_ms_since_boot(get_absolute_time())-last_time) > 3000)
             {
                 last_time = to_ms_since_boot(get_absolute_time()); //atualiza tempo
 
@@ -90,6 +97,8 @@ void vSemaforoLedTask()
 
                 estado = (estado + 1)%3; //altera estado
             }
+
+            vTaskDelay(pdMS_TO_TICKS(30));
         }
 
         //inicializa semaforo para modo noturno
@@ -109,25 +118,9 @@ void vSemaforoLedTask()
                 gpio_put(LED_RED, alterna_led);
                 gpio_put(LED_GREEN, alterna_led); 
             }
+            vTaskDelay(pdMS_TO_TICKS(30));
         }
         
-    }
-}
-
-//tarefa para alterar modo por flag
-void vAlteraModoTask()
-{
-    //inicializa botão A
-    gpio_init(BUTTON_A);
-    gpio_set_dir(BUTTON_A, GPIO_IN);
-    gpio_pull_up(BUTTON_A);
-    while (true)
-    {
-        //altera modo quando botão é pressionado
-        if (!gpio_get(BUTTON_A)){
-            modo = !modo;
-            vTaskDelay(pdMS_TO_TICKS(250));
-        }
     }
 }
 
@@ -199,6 +192,7 @@ void vSinaisSonorosTask()
                     pwm_set_gpio_level(BUZZER, 1000);
                 }
             }
+            vTaskDelay(pdMS_TO_TICKS(30));
         }
 
         //looping para modo noturno
@@ -214,6 +208,7 @@ void vSinaisSonorosTask()
                 buzzer_on = 1;
                 pwm_set_gpio_level(BUZZER, 1000);
             }
+            vTaskDelay(pdMS_TO_TICKS(30));
         }
     }
 }
@@ -275,18 +270,92 @@ void vDisplayTask()
     }
 }
 
+//tarefa para mostrar configurar 7segmentos
+void v7SegmentosTask(){
+    uint32_t last_time = 0;
+    uint8_t count = 0;
+    uint8_t ultimo_estado = 3;
+    gpio_init(BIT0);
+    gpio_init(BIT1);
+    gpio_init(BIT2);
+    gpio_init(BIT3);
+    gpio_set_dir(BIT0, GPIO_OUT);
+    gpio_set_dir(BIT1, GPIO_OUT);
+    gpio_set_dir(BIT2, GPIO_OUT);
+    gpio_set_dir(BIT3, GPIO_OUT);
+
+    while (true)
+    {
+        if(modo){
+
+            if(estado !=ultimo_estado){
+                last_time = to_ms_since_boot(get_absolute_time());
+                ultimo_estado = estado;
+                switch (estado){
+                    case 0:
+                        count = 9;
+                        break;
+
+                    case 1:
+                        count = 6;
+                        break;
+
+                    case 2:
+                        count = 3;
+                        break;
+                }
+                valor_bin(count);
+            }
+
+            if (to_ms_since_boot(get_absolute_time())-last_time > 1000) {
+                last_time = to_ms_since_boot(get_absolute_time());
+                count --;
+                valor_bin(count);
+            }   
+
+        }
+        else{
+            ultimo_estado = 3;
+            valor_bin(0);
+        }
+        vTaskDelay(pdMS_TO_TICKS(30));
+
+    } 
+
+}
+
 int main()
 {
     stdio_init_all();
 
-    xTaskCreate(vAlteraModoTask, "Altera Modo Task", configMINIMAL_STACK_SIZE,
-         NULL, tskIDLE_PRIORITY, NULL);
-    xTaskCreate(vSemaforoLedTask, "Semaforo Led Task", configMINIMAL_STACK_SIZE, 
-        NULL, tskIDLE_PRIORITY, NULL);
-    xTaskCreate(vSinaisSonorosTask, "Sinal Sonoro Task", configMINIMAL_STACK_SIZE, 
-        NULL, tskIDLE_PRIORITY, NULL);
-    xTaskCreate(vDisplayTask, "Exibe Display Task", configMINIMAL_STACK_SIZE, 
-        NULL, tskIDLE_PRIORITY, NULL);   
+    //inicializa botão A
+    gpio_init(BUTTON_A);
+    gpio_set_dir(BUTTON_A, GPIO_IN);
+    gpio_pull_up(BUTTON_A);
+    gpio_set_irq_enabled_with_callback(BUTTON_A, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+
+    xTaskCreate(vSemaforoLedTask, "Semaforo Led Task", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+    xTaskCreate(vSinaisSonorosTask, "Sinal Sonoro Task", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+    xTaskCreate(vDisplayTask, "Exibe Display Task", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+    xTaskCreate(v7SegmentosTask, "Configura Display 7 Segmentos Task", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);   
     vTaskStartScheduler();
     panic_unsupported();
+}
+
+//tarefa para alterar modo por flag
+void gpio_irq_handler(uint gpio, uint32_t events) {
+    static uint32_t last_time = 0;
+    
+    //debounce de 200 ms para os botões
+    if (to_ms_since_boot(get_absolute_time())-last_time > 200) {
+        last_time = to_ms_since_boot(get_absolute_time());
+        modo = !modo;
+    }
+}
+
+void valor_bin(uint8_t numero){
+    gpio_put(BIT0, (numero >> 0) & 1);
+    gpio_put(BIT1, (numero >> 1) & 1);
+    gpio_put(BIT2, (numero >> 2) & 1);
+    gpio_put(BIT3, (numero >> 3) & 1);
 }
